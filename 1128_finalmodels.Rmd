@@ -1,0 +1,376 @@
+---
+title: "Models code and final prediction"
+date: "11/28/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Input the newest data
+
+# After pasting the code together, we can use the data directly from the steps above
+# train <- name of the training data set
+# test <- name of the testing data set
+
+train <- read.csv("1130_train_noNA_description_popdensity_displacement_isday_rushhour.csv")
+test <- read.csv("1130_test_noNA_description_popdensity_displacement_isday_rushhour.csv")
+testY <- read.csv("AccSample.csv")
+testYfactor <- as.factor(testY$SEVERITY)
+head(train, 10)
+head(test, 10)
+```
+
+
+# Predictors selection:
+
+
+```{r}
+# corrplot (Delete multicollinearity)
+```
+
+```{r}
+# Important plot
+``` 
+
+```{r}
+# forward/best/backward
+```
+
+description_severity
+End_Lng
+End_Lat
+weather_timestamp_yr
+state
+distance.mi.
+time_length
+timezone
+pressure.in.
+wind.chill.F
+weather_timestamp_mo
+temperature.F
+pop_density
+weather_timestamp_hr
+Humidity...
+Season
+Nautical_Twilight
+Wind_Speed.mph.
+Weather_Timestamp_min
+Visibility.mi.
+# weather_condition
+
+### Random forest cannot handle categorical variables with more than 32 levels
+```{r}
+# Select predictor subset"
+train_subset <- dplyr::select(train, c("Severity","description_severity","End_Lng","End_Lat","Weather_Timestamp_yr",
+                                       "State","Distance.mi.","Time_length","Timezone","Pressure.in.","Wind_Chill.F.",
+                                       "Weather_Timestamp_mo","Temperature.F.","pop_density","Weather_Timestamp_hr","Humidity...",
+                                       "Season","Nautical_Twilight","Wind_Speed.mph.","Weather_Timestamp_min","Visibility.mi."))
+test_subset <- dplyr::select(test, c("description_severity","End_Lng","End_Lat","Weather_Timestamp_yr","State","Distance.mi.","Time_length",
+                                     "Timezone","Pressure.in.","Wind_Chill.F.","Weather_Timestamp_mo","Temperature.F.",
+                                     "pop_density","Weather_Timestamp_hr","Humidity...","Season","Nautical_Twilight",
+                                     "Wind_Speed.mph.","Weather_Timestamp_min","Visibility.mi."))
+
+# this step turn categorical predictors into factor
+train_subset
+test_subset
+fac_index_train <- c(1,6,9,17,18) 
+train_subset[, fac_index_train] <- lapply(train_subset[, fac_index_train], factor)
+
+fac_index_test <- c(5,8,16,17)
+test_subset[, fac_index_test] <- lapply(test_subset[, fac_index_test], factor)
+
+```
+
+
+# Models Prediction (1. model; 2. error rate) categorical response cannot use mse value.
+
+
+## KNN
+```{r}
+# KNN Model code
+
+train_subset_scale <- scale(train_subset[, -c(1, 6, 9, 17, 18)])
+test_subset_scale <- scale(test_subset[, -c(5, 8, 16, 17)])
+
+k <- seq(10, sqrt(nrow(train_subset)) + 10, 10)
+
+knn <- Rfast::knn.cv(folds = NULL, nfolds = 10, stratified = TRUE, seed = FALSE, 
+                     y = as.factor(train_subset$Severity), x = as.matrix(train_subset_scale), 
+                     k = k, dist.type = "euclidean", type = "C", method = "average", 
+                     freq.option = 0, pred.ret = TRUE, mem.eff = FALSE)
+pred.error <- 1 - knn$crit
+pred.error
+
+ktop <- k[which.min(pred.error)]
+
+library(class)
+knn_fit <- knn(train_subset_scale, test_subset_scale, train_subset$Severity, k = ktop)
+
+prediction_KNN <- data.frame(Ob = seq(length(knn_fit)),
+                     Severity = ifelse(knn_fit == "MILD", "MILD", "SEVERE"))
+
+```
+
+```{r}
+# KNN Error rate'
+KNN_error_rate <- mean(knn_fit != testYfactor)
+KNN_error_rate
+```
+
+
+## LDA
+
+```{r}
+library(crossval)
+train_subset_y <- as.factor(train_subset$Severity)
+test_subset_x <- test_subset
+test_subset_x <- test_subset_x[, -c(5, 8, 16, 17)] #removing categorical predictors
+#class(test_subset_x) <- "numeric"
+
+predfun.lda =function(train.x, train.y, test.x, test.y, negative){
+
+require("MASS")
+
+lda.fit = lda(train.y~., data = train.x)
+
+ynew = predict(lda.fit, test.x)$class
+
+out = confusionMatrix(test.y, ynew, negative = negative)
+
+return(out)
+
+}
+
+cv.out <- crossval(predfun.lda, test_subset_x,  testYfactor, K = 10, B = 1, negative = "1", verbose = FALSE)
+cv.out
+confmat <- cv.out$stat/sum(cv.out$stat)
+confmat
+```
+
+```{r}
+# LDA Error rate
+prediction_lda.class <- lda_fit$class
+table(prediction_lda.class, testY)
+LDA_error_rate <- mean(lda_fit != factor(testY))
+```
+
+
+## QDA
+
+```{r}
+predfun.qda =function(train.x, train.y, test.x, test.y, negative){
+
+require("MASS")
+
+qda.fit = qda(train.y~., data = train.x)
+
+ynew = predict(qda.fit, test.x)$class
+
+out = confusionMatrix(test.y, ynew, negative = negative)
+
+return(out)
+
+}
+
+cv2.out <- crossval(predfun.qda, test_subset_x,  testYfactor, K = 10, B = 1, negative = "1", verbose = FALSE)
+cv2.out
+confmat2 <- cv2.out$stat/sum(cv2.out$stat)
+confmat2
+```
+
+```{r}
+# QDA Error rate
+prediction_qda.class <- qda_fit$class
+table(prediction_qda.class, testY)
+QDA_error_rate <- mean(qda_fit != factor(testY))
+```
+
+
+## Random forest
+```{r}
+# Random forest Model code
+set.seed(1128)
+train_subset
+test_subset
+
+library(stats)
+library(dplyr)
+library(randomForest)
+library(tidyverse)
+
+
+# Determine parameter value for mtry:
+# mtry = sqrt(numberOfPredictorsInModel)
+# Round up or down for mtry
+ncol(train_subset) - 1 # Number of predictors
+sqrt(ncol(train_subset) - 1) # Round down: 5
+
+# Random Forest Model:
+rf_fit <- randomForest(Severity~., data = train_subset, ntree = 1000, importance = T, mtry = sqrt(ncol(train_subset) - 1))
+prediction_RF <- predict(rf_fit, test_subset)
+```
+
+```{r}
+# Random forest Error rate
+Random_Forest_error_rate <- mean(rf_fit != factor(testY))
+```
+
+
+## XGBoost
+```{r}
+# XGBoost Model code
+set.seed(1128)
+train_subset
+test_subset
+
+## data prep
+library(dplyr)
+library(rsample)
+library(recipes)
+library(parsnip)
+library(dials)
+library(yardstick)
+library(doParallel)
+all_cores <- parallel::detectCores(logical = FALSE)
+registerDoParallel(cores = all_cores)
+
+## Xgboost model tuning
+
+## Starting to tune the model
+### Step I: xgb_spec: Specifying all kinds of hypeparameters we need to tune for the model
+
+xgb_spec <- boost_tree(
+  trees = tune(), 
+  tree_depth = tune(), min_n = tune(), 
+  loss_reduction = tune(),                     ## first three: model complexity
+  sample_size = tune(), mtry = tune(),         ## randomness
+  learn_rate = tune(),                         ## step size
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+### Step II: xgb_grid: randomly create some hypeparameters to avoid bias
+### try to output xgb_grid to see what happen
+
+xgb_grid <- grid_latin_hypercube(
+  trees(), 
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), train_subset),
+  learn_rate(),
+  size = 20 #tRY DIFF SIZE:10,20,30,40,50
+)
+
+### Step III: Workflow
+library(tidymodels)
+xgb_wf <- workflow() %>%
+  add_formula(Severity ~ .) %>%
+  add_model(xgb_spec)
+
+set.seed(101)
+vb_folds <- vfold_cv(train_subset, strata = Severity)
+
+doParallel::registerDoParallel()
+
+set.seed(1234) ### Don't forget to set seed whenever using Xgboost models
+
+################ WARNING: THE PART BELOW MAY RUN LONGER THAN YOU EXPECTED AS THE SIZE IN xgb_grid GROWS
+################ Write down the result every single time
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = vb_folds,
+  grid = xgb_grid,
+  control = control_grid(save_pred = TRUE)
+)
+
+### Step IV: This is a part to see the result and determine by what hypeparameters the roc_auc can be highest
+### If still couldn't understand, ask me
+
+collect_metrics(xgb_res)
+
+show_best(xgb_res, "roc_auc")
+
+best_auc <- select_best(xgb_res, "roc_auc")
+
+final_xgb <- finalize_workflow(
+  xgb_wf,
+  best_auc
+)
+
+### fit the model on the train data and predict on the test data
+
+xgboost_fit <- fit(final_xgb, train_subset)
+prediction_xgboost <- predict(xgboost_fit, test_subset)
+```
+
+```{r}
+# XGBoost Error rate
+prediction_xgboost.class <- predict(xgboost_fit, test_subset)$class
+xgboost_error_rate <- mean(prediction_xgboost.class != factor(testY))
+```
+
+
+
+# Error rate comparison plot
+
+```{r}
+# Error rate comparison plot
+error_rates_plot <- data.frame(model = c("KNN", "LDA", "QDA","Random_Forest", "XGBoost"),
+                               error.rate = c(KNN_error_rate,
+                                              LDA_error_rate, 
+                                              QDA_error_rate, 
+                                              Random_Forest_error_rate,
+                                              xgboost_error_rate))
+ggplot(data = error_rates_plot, aes(x = model, y = error.rate)) + geom_point() +
+geom_text(aes(label = round(error.rate,4)), vjust=1.5) + scale_y_continuous(limits = c(0.3,0.39))
+```
+
+
+
+# Choose the model with the lowest Error Rate and MSE
+# Then use that model to make a prediction (upload to the prediction data to the kaggle)
+
+```{r}
+# prediction
+
+### KNN
+write.csv(prediction_KNN,"knn_predict.csv")
+# dim(prediction_KNN)
+# sum(prediction_KNN=="SEVERE")
+
+### LDA
+write.csv(prediction_LDA,"lda_predict.csv")
+# dim(prediction_LDA)
+# sum(prediction_LDA=="SEVERE")
+
+### QDA
+write.csv(prediction_QDA,"qda_predict.csv")
+# dim(prediction_QDA)
+# sum(prediction_QDA=="SEVERE")
+
+### RANDOMFOREST
+write.csv(prediction_RF,"randomForest_predict.csv")
+# dim(prediction_RF)
+# sum(prediction_RF=="SEVERE")
+
+### XGBOOST
+write.csv(prediction_xgboost, "xgboost_predict.csv")
+# dim(prediction_xgboost)
+# sum(prediction_xgboost=="SEVERE")
+
+```
+
+
+
+
+
+
+
+
+
+
